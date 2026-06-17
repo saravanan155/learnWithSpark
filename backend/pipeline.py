@@ -1,12 +1,13 @@
-"""The Learn with Spark pipeline (B7).
+"""The Learn with Spark pipeline (B8).
 
-The research node is now a REAL agent: it asks a model (Nebius Token Factory) to invent
-kid-friendly lesson ideas, instead of returning hard-coded fakes. Everything else (the human
-gate, guardrail, routing, checkpointing) is unchanged. If no Nebius key is configured, research
-falls back to the old stub ideas so the graph still runs — an early taste of error handling.
+Now TWO nodes are real agents. The guardrail joins research: it asks a model whether the chosen
+idea is safe for kids (returning a verdict + reason), and then a SECOND human gate lets a person
+approve or override that verdict before we'd build anything. Both real calls fall back to stubs
+if Nebius is unreachable, so the graph never crashes.
 
-    research (Nebius) --> pick_idea_gate (PAUSE) --> guardrail --+--(safe)----> END
-                                                                 +--(unsafe)--> blocked --> END
+    research (Nebius) --> pick_idea_gate (PAUSE) --> guardrail (Nebius) --> safety_gate (PAUSE) --+
+                                                                                                  |
+                                                          (approved)--> END    (rejected)--> blocked --> END
 """
 
 import json
@@ -27,7 +28,8 @@ class State(TypedDict, total=False):
     concept: str  # what we want to teach, e.g. "knowledge cutoff"
     idea_options: list[dict[str, Any]]  # filled in by the research node
     chosen_idea: dict[str, Any]  # the one the human picks at the gate
-    guardrail_result: dict[str, Any]  # filled in by the guardrail node
+    guardrail_result: dict[str, Any]  # the guardrail agent's verdict: {safe, reason, idea}
+    approval: dict[str, Any]  # the human's call at the safety gate: {approved: bool}
     halted_reason: str  # set if the run is stopped early (e.g. blocked by the guardrail)
 
 
@@ -87,33 +89,80 @@ def pick_idea_gate(state: State) -> dict:
     return {"chosen_idea": chosen}
 
 
-# THE GUARDRAIL — checks the chosen idea and returns a verdict (safe or not). Still a stub:
-# it just flags the concept if it contains an obviously kid-unsafe word. (In B8: a real model.)
+# THE GUARDRAIL — the SECOND real agent. It asks a model whether the chosen idea is kid-safe and
+# returns a verdict {safe, reason}. Like research, it degrades to a stub (a tiny word blocklist)
+# when no key is set or the call fails, so the graph keeps running.
 BLOCKLIST = ["violence", "weapon", "scary", "gun"]
+
+GUARDRAIL_PROMPT = """You are a child-safety reviewer for a game that teaches kids about AI.
+Decide whether this game-lesson idea is appropriate and safe for children (roughly ages 7-12):
+
+"{idea}"
+
+Reply with ONLY a JSON object: {{"safe": true or false, "reason": "one short sentence"}}.
+No prose, no markdown — just the JSON object."""
+
+
+def _stub_verdict(concept: str) -> dict:
+    """Fallback safety check (keyword blocklist) used when the model is unavailable."""
+    safe = not any(word in concept.lower() for word in BLOCKLIST)
+    reason = "no blocklisted words" if safe else "concept contains a kid-unsafe word"
+    return {"safe": safe, "reason": reason}
+
+
+def _parse_verdict(text: str) -> dict:
+    """Pull the JSON verdict out of the model's reply."""
+    text = text.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+    raw = json.loads(text)
+    return {"safe": bool(raw["safe"]), "reason": str(raw.get("reason", "")).strip()}
 
 
 def guardrail_node(state: State) -> dict:
-    """Pretend safety check on the chosen idea. In B8 this calls a real model."""
+    """Real safety agent: asks Nebius if the chosen idea is kid-safe (stub fallback on failure)."""
     chosen = state.get("chosen_idea") or {}
-    concept = state.get("concept", "").lower()
-    safe = not any(word in concept for word in BLOCKLIST)
-    print(f"[guardrail] chosen idea {chosen.get('id')!r} -> {'safe' if safe else 'UNSAFE'}")
-    return {"guardrail_result": {"safe": safe, "idea": chosen.get("id")}}
+    summary = chosen.get("summary", "")
+    if not has_nebius():
+        print("[guardrail] no NEBIUS_API_KEY — using stub blocklist check")
+        verdict = _stub_verdict(state.get("concept", ""))
+    else:
+        try:
+            print(f"[guardrail] asking Nebius to safety-check idea {chosen.get('id')!r} ...")
+            reply = get_nebius(temperature=0).invoke(GUARDRAIL_PROMPT.format(idea=summary))
+            verdict = _parse_verdict(reply.content)
+        except Exception as exc:  # network error, bad JSON, etc. -> degrade gracefully
+            print(f"[guardrail] Nebius call failed ({exc}); using stub blocklist check")
+            verdict = _stub_verdict(state.get("concept", ""))
+    verdict["idea"] = chosen.get("id")
+    print(f"[guardrail] verdict: {'safe' if verdict['safe'] else 'UNSAFE'} — {verdict['reason']}")
+    return {"guardrail_result": verdict}
 
 
-# THE BLOCKED node — the dead-end we route to when the guardrail flags the idea. It stops the
+# THE SAFETY GATE — the SECOND human-in-the-loop pause. The model only RECOMMENDS; a person makes
+# the final call on whether an idea is safe enough to build for kids. They can approve the model's
+# verdict or override it. On resume, the value we resume with becomes `decision`.
+def safety_gate(state: State) -> dict:
+    """Stop and wait for a human to approve (or override) the guardrail's safety verdict."""
+    verdict = state.get("guardrail_result") or {}
+    decision = interrupt({"question": "Approve this idea for kids?", "verdict": verdict})
+    approved = bool((decision or {}).get("approved"))
+    print(f"[safety_gate] human {'APPROVED' if approved else 'REJECTED'} idea {verdict.get('idea')!r}")
+    return {"approval": {"approved": approved}}
+
+
+# THE BLOCKED node — the dead-end we route to when the idea isn't approved. It stops the
 # pipeline instead of building something unsafe for kids.
 def blocked_node(state: State) -> dict:
-    print("[blocked] idea flagged unsafe for kids — stopping, not building.")
-    return {"halted_reason": "guardrail flagged the concept as not kid-safe"}
+    print("[blocked] idea not approved for kids — stopping, not building.")
+    return {"halted_reason": "idea was not approved as kid-safe at the safety gate"}
 
 
 # THE ROUTER — a plain function that returns the NAME of the next node based on state.
-# This is the control-flow decision: the graph isn't on rails, it chooses.
-def route_after_guardrail(state: State) -> str:
-    if (state.get("guardrail_result") or {}).get("safe"):
-        return END  # safe -> finish
-    return "blocked"  # unsafe -> the dead-end
+# This is the control-flow decision: the graph isn't on rails, it chooses. The human's approval
+# at the safety gate is what decides — it can override the model either way.
+def route_after_safety(state: State) -> str:
+    if (state.get("approval") or {}).get("approved"):
+        return END  # approved -> finish
+    return "blocked"  # rejected -> the dead-end
 
 
 # THE CHECKPOINTER — saves state to a SQLite file so it survives across processes/restarts.
@@ -134,11 +183,13 @@ def build_graph(checkpointer=None):
     g.add_node("research", research_node)
     g.add_node("pick_idea_gate", pick_idea_gate)
     g.add_node("guardrail", guardrail_node)
+    g.add_node("safety_gate", safety_gate)
     g.add_node("blocked", blocked_node)
     g.add_edge(START, "research")  # start -> research
     g.add_edge("research", "pick_idea_gate")  # research -> human pause
-    g.add_edge("pick_idea_gate", "guardrail")  # (after resume) -> guardrail
-    # The conditional edge: the router decides safe -> END or unsafe -> blocked.
-    g.add_conditional_edges("guardrail", route_after_guardrail, [END, "blocked"])
+    g.add_edge("pick_idea_gate", "guardrail")  # (after resume) -> guardrail agent
+    g.add_edge("guardrail", "safety_gate")  # verdict -> second human pause
+    # The conditional edge: the router reads the human's approval -> END or blocked.
+    g.add_conditional_edges("safety_gate", route_after_safety, [END, "blocked"])
     g.add_edge("blocked", END)  # blocked -> done (stopped)
     return g.compile(checkpointer=checkpointer)
