@@ -1,14 +1,12 @@
-"""The Learn with Spark pipeline (B5).
+"""The Learn with Spark pipeline (B6).
 
-Now there's a HUMAN PAUSE between research and guardrail. The new pick_idea_gate node calls
-`interrupt()`, which stops the whole graph and hands the ideas out to a person. The graph only
-continues when we resume it with the person's choice. This is "human-in-the-loop": the agent
-does not decide which idea to build — a human does.
+Now the GRAPH decides where to go next. After the guardrail runs, a "router" function looks at
+the result and picks the next step: if the idea is safe we finish; if it's flagged unsafe we go
+to a `blocked` node and stop instead of building. This is control flow — the path is not fixed,
+it depends on the state.
 
-    research --> pick_idea_gate (PAUSE for a human) --> guardrail --> END
-
-The pause relies on the checkpointer from B4: the graph saves itself, the program can even exit,
-and we resume later with the saved choice.
+    research --> pick_idea_gate (PAUSE) --> guardrail --+--(safe)----> END
+                                                        +--(unsafe)--> blocked --> END
 """
 
 import sqlite3
@@ -27,6 +25,7 @@ class State(TypedDict, total=False):
     idea_options: list[dict[str, Any]]  # filled in by the research node
     chosen_idea: dict[str, Any]  # the one the human picks at the gate
     guardrail_result: dict[str, Any]  # filled in by the guardrail node
+    halted_reason: str  # set if the run is stopped early (e.g. blocked by the guardrail)
 
 
 # 2. A NODE — a function (state) -> partial update. LangGraph merges the returned dict
@@ -57,19 +56,33 @@ def pick_idea_gate(state: State) -> dict:
     return {"chosen_idea": chosen}
 
 
-# THE GUARDRAIL — now checks only the CHOSEN idea (cheaper than checking all of them, and it's
-# the one that matters). Still a stub. (In B8 it calls a real model.)
+# THE GUARDRAIL — checks the chosen idea and returns a verdict (safe or not). Still a stub:
+# it just flags the concept if it contains an obviously kid-unsafe word. (In B8: a real model.)
+BLOCKLIST = ["violence", "weapon", "scary", "gun"]
+
+
 def guardrail_node(state: State) -> dict:
     """Pretend safety check on the chosen idea. In B8 this calls a real model."""
     chosen = state.get("chosen_idea") or {}
-    print(f"[guardrail] checking chosen idea {chosen.get('id')!r} for kid-safety")
-    return {
-        "guardrail_result": {
-            "safe": True,
-            "idea": chosen.get("id"),
-            "notes": "STUB guardrail — no real check yet",
-        }
-    }
+    concept = state.get("concept", "").lower()
+    safe = not any(word in concept for word in BLOCKLIST)
+    print(f"[guardrail] chosen idea {chosen.get('id')!r} -> {'safe' if safe else 'UNSAFE'}")
+    return {"guardrail_result": {"safe": safe, "idea": chosen.get("id")}}
+
+
+# THE BLOCKED node — the dead-end we route to when the guardrail flags the idea. It stops the
+# pipeline instead of building something unsafe for kids.
+def blocked_node(state: State) -> dict:
+    print("[blocked] idea flagged unsafe for kids — stopping, not building.")
+    return {"halted_reason": "guardrail flagged the concept as not kid-safe"}
+
+
+# THE ROUTER — a plain function that returns the NAME of the next node based on state.
+# This is the control-flow decision: the graph isn't on rails, it chooses.
+def route_after_guardrail(state: State) -> str:
+    if (state.get("guardrail_result") or {}).get("safe"):
+        return END  # safe -> finish
+    return "blocked"  # unsafe -> the dead-end
 
 
 # THE CHECKPOINTER — saves state to a SQLite file so it survives across processes/restarts.
@@ -90,8 +103,11 @@ def build_graph(checkpointer=None):
     g.add_node("research", research_node)
     g.add_node("pick_idea_gate", pick_idea_gate)
     g.add_node("guardrail", guardrail_node)
+    g.add_node("blocked", blocked_node)
     g.add_edge(START, "research")  # start -> research
     g.add_edge("research", "pick_idea_gate")  # research -> human pause
     g.add_edge("pick_idea_gate", "guardrail")  # (after resume) -> guardrail
-    g.add_edge("guardrail", END)  # guardrail -> done
+    # The conditional edge: the router decides safe -> END or unsafe -> blocked.
+    g.add_conditional_edges("guardrail", route_after_guardrail, [END, "blocked"])
+    g.add_edge("blocked", END)  # blocked -> done (stopped)
     return g.compile(checkpointer=checkpointer)

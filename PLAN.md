@@ -47,7 +47,7 @@ failure, you have not finished."* → error handling + HITL are where the grade 
 | B3 | Add a `guardrail` node + an edge | data flowing between nodes |
 | B4 | Add the SqliteSaver checkpointer | persistence (survives a restart) |
 | B5 | Human pause after research ("pick an idea") | human-in-the-loop (interrupt/resume) |
-| B6 | A conditional route (guardrail says redo → loop back) | control flow (graph decides) |
+| B6 | A conditional route (guardrail: safe → finish, unsafe → blocked) | control flow (graph decides) |
 
 ### Phase B — Make the agents real (needs Nebius + Anthropic keys)
 | # | Batch | What becomes real / concept |

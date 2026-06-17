@@ -49,11 +49,14 @@ def print_final(thread: str, state: dict) -> None:
     print(f"\nFinal state for thread {thread!r}:")
     print("  chosen_idea =", state.get("chosen_idea"))
     print("  guardrail   =", state.get("guardrail_result"))
+    if state.get("halted_reason"):
+        print("  halted      =", state.get("halted_reason"))
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--thread", default="demo")
+    ap.add_argument("--concept", default="knowledge cutoff", help="what to teach")
     ap.add_argument("--pick", help="idea id to choose (skips the prompt)")
     ap.add_argument("--stop-at-pause", action="store_true", help="stop at the pause; resume later")
     ap.add_argument("--resume", action="store_true", help="resume a thread paused at the gate")
@@ -75,7 +78,7 @@ def main():
         return
 
     # Fresh run. It will pause at the gate.
-    result = graph.invoke({"concept": "knowledge cutoff"}, config)
+    result = graph.invoke({"concept": args.concept}, config)
     if "__interrupt__" in result:
         payload = result["__interrupt__"][0].value
         show_options(payload)
