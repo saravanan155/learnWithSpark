@@ -15,9 +15,10 @@ def main():
     result = graph.invoke({"concept": "knowledge cutoff"})
 
     print("\nFinal state:")
-    print("  concept =", result.get("concept"))
+    print("  concept  =", result.get("concept"))
     for idea in result.get("idea_options", []):
-        print(f"  idea    = {idea['id']}: {idea['summary']}")
+        print(f"  idea     = {idea['id']}: {idea['summary']}")
+    print("  guardrail =", result.get("guardrail_result"))
 
 
 if __name__ == "__main__":
