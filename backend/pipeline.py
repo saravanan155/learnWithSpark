@@ -1,14 +1,18 @@
-"""The Learn with Spark pipeline (B3).
+"""The Learn with Spark pipeline (B4).
 
-We now have TWO nodes: research, then guardrail. The point of B3 is to see how data flows
-between nodes — the guardrail node READS the idea_options that the research node WROTE. Neither
-node knows about the other; they only share the State. There is still NO LLM.
+Same two nodes as B3 (research -> guardrail), but now the graph has a CHECKPOINTER. A
+checkpointer saves the State to a SQLite file after every step, keyed by a `thread_id`. That
+means the state is durable: a completely separate process can read it back later. This is the
+foundation for both "resume after a restart" and the human pauses we add in B5.
 
-    research --(writes idea_options)--> guardrail --(reads them, writes guardrail_result)--> END
+    research --> guardrail --> END   (and every step is saved to checkpoints.sqlite)
 """
 
+import sqlite3
+from pathlib import Path
 from typing import Any, TypedDict
 
+from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, START, StateGraph
 
 
@@ -49,12 +53,23 @@ def guardrail_node(state: State) -> dict:
     }
 
 
-# THE GRAPH — now two nodes in a row, so state flows research -> guardrail.
-def build_graph():
+# THE CHECKPOINTER — saves state to a SQLite file so it survives across processes/restarts.
+DB_PATH = Path(__file__).resolve().parent / "checkpoints.sqlite"
+
+
+def make_checkpointer(db_path: Path | str = DB_PATH) -> SqliteSaver:
+    # check_same_thread=False lets the one connection be reused across LangGraph's calls.
+    conn = sqlite3.connect(str(db_path), check_same_thread=False)
+    return SqliteSaver(conn)
+
+
+# THE GRAPH — two nodes in a row, plus an optional checkpointer.
+# Passing a checkpointer is what makes the run resumable and durable.
+def build_graph(checkpointer=None):
     g = StateGraph(State)
     g.add_node("research", research_node)
     g.add_node("guardrail", guardrail_node)
     g.add_edge(START, "research")  # start -> research
     g.add_edge("research", "guardrail")  # research -> guardrail (data flows here)
     g.add_edge("guardrail", END)  # guardrail -> done
-    return g.compile()
+    return g.compile(checkpointer=checkpointer)
