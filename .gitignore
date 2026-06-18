@@ -11,6 +11,9 @@ backend/.env
 *.sqlite3
 *.db
 
+# Generated graph render (regenerate from the compiled graph; see README)
+backend/graph.png
+
 # Editor / OS
 .DS_Store
 .idea/

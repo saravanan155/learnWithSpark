@@ -54,6 +54,7 @@ failure, you have not finished."* → error handling + HITL are where the grade 
 |---|---|---|
 | B7 | Wire Nebius; `research` calls a real model | model usage + Nebius requirement |
 | B8 | `guardrail` calls a real model + its approval gate | 2nd agent + 2nd gate |
+| B8.5 | Research gate gets real teeth: **accept / edit / regenerate / abandon** (regenerate capped at 3) | richer HITL — the human shapes, rejects-and-regenerates, or cleanly abandons ideas; the graph loops back to `research` or stops |
 | B9 | `coding` agent (Claude) — generates game code as text | multi-agent |
 | B10 | `testing` agent — checks the code, writes a report | the test step |
 | B11 | Repair loop + escalation (test fails → fix, max 3) | error/tool-failure recovery |

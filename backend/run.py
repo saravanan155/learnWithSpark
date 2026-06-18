@@ -1,15 +1,19 @@
-"""Run the pipeline, which now PAUSES TWICE for a human (B8).
+"""Run the pipeline, which PAUSES TWICE for a human (B8.5).
 
-The graph stops at two gates: first to pick an idea, then to approve the guardrail's safety
-verdict. Each `invoke` runs until the next pause (returning an "__interrupt__") or until the end,
-so we just loop: show the pause, get the human's input, resume, repeat. Because state is
-checkpointed, you can stop at either pause and resume later from a separate process.
+The graph stops at two gates: first the research gate (accept / edit / regenerate an idea), then
+the safety gate (approve the guardrail's verdict). Each `invoke` runs until the next pause
+(returning an "__interrupt__") or until the end, so we just loop: show the pause, get the human's
+input, resume, repeat. Because state is checkpointed, you can stop at either pause and resume
+later from a separate process.
 
 Usage:
     cd backend
-    uv run python run.py                              # run; you'll pick an idea, then approve
-    uv run python run.py --pick idea_b --approve      # run, auto-pick + auto-approve (no prompts)
-    uv run python run.py --pick idea_a --reject       # run, but reject at the safety gate
+    uv run python run.py                              # interactive: pick/edit/regenerate, then approve
+    uv run python run.py --pick idea_b --approve      # accept idea_b + auto-approve (no prompts)
+    uv run python run.py --regenerate --approve       # reject the first set(s), then accept on the last
+    uv run python run.py --abandon                    # give up at the research gate (no idea chosen)
+    uv run python run.py --pick idea_a --edit "summary=Sort the animal cards" --approve  # edit then go
+    uv run python run.py --pick idea_a --reject       # accept, but reject at the safety gate
     uv run python run.py --thread t1 --stop-at-pause  # run to the next pause, then exit
     uv run python run.py --thread t1 --resume         # resume that paused thread
 """
@@ -29,6 +33,9 @@ def is_pick_gate(payload: dict) -> bool:
 def announce(payload: dict) -> None:
     print(f"\n  ⏸  PAUSED — {payload.get('question')}")
     if is_pick_gate(payload):
+        if payload.get("max_attempts"):
+            note = "" if payload.get("can_regenerate") else " — last set, regenerate no longer offered"
+            print(f"       (idea set {payload.get('attempt')} of {payload.get('max_attempts')}{note})")
         for o in payload.get("options", []):
             mech = f"  [{o['mechanic']}]" if o.get("mechanic") else ""
             print(f"       · {o['id']}: {o.get('title', o['id'])}{mech}")
@@ -40,16 +47,63 @@ def announce(payload: dict) -> None:
         print(f"       AI safety check: {'safe' if v.get('safe') else 'UNSAFE'} — {v.get('reason', '')}")
 
 
-def choose_idea(options: list[dict], pick_arg: str | None) -> str:
-    """Decide the pick: --pick if given, else ask, else default to the first option."""
-    ids = [o["id"] for o in options]
-    if pick_arg:
-        return pick_arg
+def _parse_edits(pairs: list[str]) -> dict:
+    """Turn CLI --edit "field=value" pairs into an edits dict."""
+    edits = {}
+    for pair in pairs:
+        if "=" in pair:
+            field, value = pair.split("=", 1)
+            edits[field.strip()] = value.strip()
+    return edits
+
+
+def _prompt_edits(chosen_id: str) -> dict:
+    """Interactively collect field edits for one idea (blank field name finishes)."""
+    print(f"     editing {chosen_id} — enter a blank field name to finish")
+    edits = {}
+    while True:
+        try:
+            field = input("       field to change (e.g. title, summary, mechanic): ").strip()
+            if not field:
+                break
+            edits[field] = input(f"       new value for {field!r}: ").strip()
+        except EOFError:
+            break
+    return edits
+
+
+def pick_decision(payload: dict, args) -> dict:
+    """Decide what to do at the research gate: accept an idea, edit one, or regenerate them all."""
+    ids = [o["id"] for o in payload["options"]]
+    can_regen = payload.get("can_regenerate")
+
+    # Non-interactive shortcuts from flags.
+    if args.abandon:
+        return {"action": "abandon"}
+    if args.regenerate and can_regen:
+        return {"action": "regenerate"}
+    if args.edit:
+        return {"action": "edit", "chosen_id": args.pick or ids[0], "edits": _parse_edits(args.edit)}
+    if args.pick:
+        return {"action": "accept", "chosen_id": args.pick}
+
+    # Interactive prompt.
+    extra = ", 'r' to regenerate" if can_regen else ""
     try:
-        answer = input(f"     pick one {ids}: ").strip()
-        return answer or ids[0]
+        answer = input(f"     accept an id {ids}, 'e <id>' to edit{extra}, 'a' to abandon: ").strip()
     except EOFError:  # non-interactive (e.g. piped) -> just take the first
-        return ids[0]
+        return {"action": "accept", "chosen_id": ids[0]}
+    if not answer:
+        return {"action": "accept", "chosen_id": ids[0]}
+    if answer.lower() in ("a", "abandon"):
+        return {"action": "abandon"}
+    if answer.lower() in ("r", "regenerate") and can_regen:
+        return {"action": "regenerate"}
+    if answer.lower().startswith("e"):
+        parts = answer.split(maxsplit=1)
+        chosen_id = parts[1].strip() if len(parts) > 1 else ids[0]
+        return {"action": "edit", "chosen_id": chosen_id, "edits": _prompt_edits(chosen_id)}
+    return {"action": "accept", "chosen_id": answer}
 
 
 def decide_approval(verdict: dict, args) -> bool:
@@ -70,7 +124,7 @@ def decide_approval(verdict: dict, args) -> bool:
 def resume_value(payload: dict, args) -> dict:
     """Turn the human's input for this gate into the value we resume the graph with."""
     if is_pick_gate(payload):
-        return {"chosen_id": choose_idea(payload["options"], args.pick)}
+        return pick_decision(payload, args)
     return {"approved": decide_approval(payload.get("verdict", {}), args)}
 
 
@@ -96,6 +150,7 @@ def drive(graph, config, args, result: dict) -> dict | None:
 
 def print_final(thread: str, state: dict) -> None:
     print(f"\nFinal state for thread {thread!r}:")
+    print("  research_attempts =", state.get("research_attempts"))
     print("  chosen_idea =", state.get("chosen_idea"))
     print("  guardrail   =", state.get("guardrail_result"))
     print("  approval    =", state.get("approval"))
@@ -107,7 +162,13 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--thread", default="demo")
     ap.add_argument("--concept", default="knowledge cutoff", help="what to teach")
-    ap.add_argument("--pick", help="idea id to choose (skips the pick prompt)")
+    ap.add_argument("--pick", help="idea id to accept (skips the pick prompt)")
+    ap.add_argument("--regenerate", action="store_true",
+                    help="reject all ideas and regenerate a fresh set (research gate)")
+    ap.add_argument("--abandon", action="store_true",
+                    help="give up at the research gate — stop with no idea chosen")
+    ap.add_argument("--edit", action="append", metavar="FIELD=VALUE",
+                    help="edit the picked idea before proceeding, e.g. --edit \"summary=...\"; repeatable")
     ap.add_argument("--approve", action="store_true", help="auto-approve at the safety gate")
     ap.add_argument("--reject", action="store_true", help="auto-reject at the safety gate")
     ap.add_argument("--stop-at-pause", action="store_true", help="stop at the next pause; resume later")

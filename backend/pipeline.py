@@ -1,13 +1,19 @@
-"""The Learn with Spark pipeline (B8).
+"""The Learn with Spark pipeline (B8.5).
 
-Now TWO nodes are real agents. The guardrail joins research: it asks a model whether the chosen
-idea is safe for kids (returning a verdict + reason), and then a SECOND human gate lets a person
-approve or override that verdict before we'd build anything. Both real calls fall back to stubs
-if Nebius is unreachable, so the graph never crashes.
+The research gate now offers REAL human-in-the-loop control, not just a pick. At the gate a person
+can: accept an idea, edit an idea's fields before it proceeds, reject them all and regenerate a
+fresh set (up to a cap, so a picky admin can't loop forever), or abandon entirely if nothing fits
+— a clean exit instead of being forced to accept. Only an idea a human actively endorsed flows on
+to the guardrail and (later) the coding agent. Both model calls still fall back to stubs if Nebius
+is unreachable, so the graph never crashes.
 
-    research (Nebius) --> pick_idea_gate (PAUSE) --> guardrail (Nebius) --> safety_gate (PAUSE) --+
-                                                                                                  |
-                                                          (approved)--> END    (rejected)--> blocked --> END
+                 +---------------- regenerate (while attempts < cap) ----------------+
+                 v                                                                    |
+    research (Nebius) --> pick_idea_gate (PAUSE) --accept/edit--> guardrail (Nebius) --> safety_gate (PAUSE) --+
+                                |                                                                               |
+                              abandon                                       (approved)--> END   (rejected)--> blocked --> END
+                                v
+                            abandoned --> END
 """
 
 import json
@@ -28,7 +34,10 @@ from llm import get_nebius, has_nebius
 class State(TypedDict, total=False):
     concept: str  # what we want to teach, e.g. "knowledge cutoff"
     idea_options: list[dict[str, Any]]  # filled in by the research node
-    chosen_idea: dict[str, Any]  # the one the human picks at the gate
+    research_attempts: int  # how many times research has run (the regenerate cap counts these)
+    regenerate: bool  # set by the gate: True = the human rejected all ideas, loop back to research
+    abandoned: bool  # set by the gate: True = the human gave up at the research gate, stop cleanly
+    chosen_idea: dict[str, Any]  # the one the human accepts (possibly edited) at the gate
     guardrail_result: dict[str, Any]  # the guardrail agent's verdict: {safe, reason, idea}
     approval: dict[str, Any]  # the human's call at the safety gate: {approved: bool}
     halted_reason: str  # set if the run is stopped early (e.g. blocked by the guardrail)
@@ -136,36 +145,84 @@ def _parse_ideas(text: str) -> list[dict]:
 
 
 # THE RESEARCH NODE — now a real agent. It asks Nebius to invent lesson ideas. If the key is
-# missing or anything goes wrong, it falls back to stub ideas instead of crashing.
+# missing or anything goes wrong, it falls back to stub ideas instead of crashing. The graph can
+# loop back here when the human rejects every idea, so it counts its attempts (the regenerate cap).
 def research_node(state: State) -> dict:
     """Real research agent: asks Nebius for kid-lesson ideas (stub fallback on any failure)."""
     concept = state.get("concept", "")
+    attempt = state.get("research_attempts", 0) + 1  # 1 on the first run, +1 each regenerate
     if not has_nebius():
-        print(f"[research] no NEBIUS_API_KEY — using stub ideas for {concept!r}")
-        return {"idea_options": _stub_ideas(concept)}
-    try:
-        print(f"[research] asking Nebius for ideas about {concept!r} ...")
-        reply = get_nebius().invoke(RESEARCH_PROMPT.format(concept=concept))
-        ideas = _parse_ideas(reply.content)
-        print(f"[research] Nebius returned {len(ideas)} idea(s)")
-        return {"idea_options": ideas}
-    except Exception as exc:  # network error, bad JSON, etc. -> degrade gracefully
-        print(f"[research] Nebius call failed ({exc}); using stub ideas")
-        return {"idea_options": _stub_ideas(concept)}
+        print(f"[research] attempt {attempt}: no NEBIUS_API_KEY — using stub ideas for {concept!r}")
+        ideas = _stub_ideas(concept)
+    else:
+        try:
+            print(f"[research] attempt {attempt}: asking Nebius for ideas about {concept!r} ...")
+            reply = get_nebius().invoke(RESEARCH_PROMPT.format(concept=concept))
+            ideas = _parse_ideas(reply.content)
+            print(f"[research] Nebius returned {len(ideas)} idea(s)")
+        except Exception as exc:  # network error, bad JSON, etc. -> degrade gracefully
+            print(f"[research] Nebius call failed ({exc}); using stub ideas")
+            ideas = _stub_ideas(concept)
+    return {"idea_options": ideas, "research_attempts": attempt, "regenerate": False}
+
+
+# How many sets of ideas a human may reject before the gate stops offering "regenerate". This caps
+# the research loop so a never-satisfied admin can't spin it forever (cf. B11's max-3 repair loop).
+MAX_RESEARCH_ATTEMPTS = 3
 
 
 # THE HUMAN GATE — this node PAUSES the graph. `interrupt(payload)` stops execution and sends
 # `payload` out to whoever is running the graph. Nothing past this point runs until we resume
 # with a value (see run.py). On resume, that value becomes the return of `interrupt()`.
+#
+# The human now has four moves, not one:
+#   - accept    -> proceed with the chosen idea
+#   - edit      -> tweak the chosen idea's fields, then proceed
+#   - regenerate-> reject them all and loop back to research for a fresh set (until the cap)
+#   - abandon   -> nothing fits; stop cleanly (no idea chosen) so the admin can start fresh
 def pick_idea_gate(state: State) -> dict:
-    """Stop and wait for a human to choose which researched idea to build."""
+    """Pause for a human to accept, edit, regenerate, or abandon the researched ideas."""
     ideas = state.get("idea_options", [])
-    decision = interrupt({"question": "Which idea should we build?", "options": ideas})
-    # `decision` is whatever we resumed with, e.g. {"chosen_id": "idea_a"}.
-    chosen_id = (decision or {}).get("chosen_id")
+    attempt = state.get("research_attempts", 1)
+    can_regenerate = attempt < MAX_RESEARCH_ATTEMPTS
+    decision = interrupt({
+        "question": "Which idea should we build?",
+        "options": ideas,
+        "attempt": attempt,
+        "max_attempts": MAX_RESEARCH_ATTEMPTS,
+        "can_regenerate": can_regenerate,  # the UI hides "regenerate" once this is False
+    }) or {}
+    action = decision.get("action")
+
+    # Give up — a clean exit when nothing fits (always available, even on the first set).
+    if action == "abandon":
+        print(f"[gate] human abandoned the ideas (attempt {attempt}) — no idea chosen")
+        return {"abandoned": True}
+
+    # Reject everything and ask for a fresh batch — only honored while under the cap.
+    if action == "regenerate" and can_regenerate:
+        print(f"[gate] human rejected all ideas (attempt {attempt}) — regenerating")
+        return {"regenerate": True}
+
+    # Otherwise accept one idea (optionally with edits applied on top).
+    chosen_id = decision.get("chosen_id")
     chosen = next((i for i in ideas if i["id"] == chosen_id), ideas[0] if ideas else {})
-    print(f"[gate] human picked {chosen.get('id')!r}")
-    return {"chosen_idea": chosen}
+    edits = decision.get("edits") or {}
+    if edits:
+        chosen = {**chosen, **edits}  # human's edits win over the model's text
+        print(f"[gate] human edited idea {chosen.get('id')!r}: changed {', '.join(edits)}")
+    print(f"[gate] human accepted idea {chosen.get('id')!r}")
+    return {"chosen_idea": chosen, "regenerate": False}
+
+
+# THE RESEARCH-GATE ROUTER — abandon stops the run, regenerate loops back to research, anything
+# else moves on to the guardrail. This control-flow decision makes the gate more than a rubber stamp.
+def route_after_pick(state: State) -> str:
+    if state.get("abandoned"):
+        return "abandoned"  # gave up -> clean stop
+    if state.get("regenerate"):
+        return "research"  # rejected all -> fresh ideas
+    return "guardrail"  # accepted (or edited) -> safety check
 
 
 # THE GUARDRAIL — the SECOND real agent. It asks a model whether the chosen idea is kid-safe and
@@ -263,6 +320,13 @@ def safety_gate(state: State) -> dict:
     return {"approval": {"approved": approved}}
 
 
+# THE ABANDONED node — the dead-end we route to when the human gives up at the research gate.
+# A clean stop with no idea chosen, so the admin can start a fresh run with a new concept.
+def abandoned_node(state: State) -> dict:
+    print("[abandoned] admin didn't like any idea — stopping. Start fresh with a new run.")
+    return {"halted_reason": "admin abandoned the ideas at the research gate (none chosen)"}
+
+
 # THE BLOCKED node — the dead-end we route to when the idea isn't approved. It stops the
 # pipeline instead of building something unsafe for kids.
 def blocked_node(state: State) -> dict:
@@ -298,12 +362,15 @@ def build_graph(checkpointer=None):
     g.add_node("pick_idea_gate", pick_idea_gate)
     g.add_node("guardrail", guardrail_node)
     g.add_node("safety_gate", safety_gate)
+    g.add_node("abandoned", abandoned_node)
     g.add_node("blocked", blocked_node)
     g.add_edge(START, "research")  # start -> research
     g.add_edge("research", "pick_idea_gate")  # research -> human pause
-    g.add_edge("pick_idea_gate", "guardrail")  # (after resume) -> guardrail agent
+    # The research gate branches: abandon -> stop, regenerate -> back to research, else -> guardrail.
+    g.add_conditional_edges("pick_idea_gate", route_after_pick, ["research", "guardrail", "abandoned"])
     g.add_edge("guardrail", "safety_gate")  # verdict -> second human pause
     # The conditional edge: the router reads the human's approval -> END or blocked.
     g.add_conditional_edges("safety_gate", route_after_safety, [END, "blocked"])
+    g.add_edge("abandoned", END)  # abandoned -> done (stopped, no idea chosen)
     g.add_edge("blocked", END)  # blocked -> done (stopped)
     return g.compile(checkpointer=checkpointer)
