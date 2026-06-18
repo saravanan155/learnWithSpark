@@ -30,7 +30,11 @@ def announce(payload: dict) -> None:
     print(f"\n  ⏸  PAUSED — {payload.get('question')}")
     if is_pick_gate(payload):
         for o in payload.get("options", []):
-            print(f"       · {o['id']}: {o['summary']}")
+            mech = f"  [{o['mechanic']}]" if o.get("mechanic") else ""
+            print(f"       · {o['id']}: {o.get('title', o['id'])}{mech}")
+            print(f"           {o.get('summary', '')}")
+            if o.get("aha_moment"):
+                print(f"           aha → {o['aha_moment']}")
     else:
         v = payload.get("verdict", {})
         print(f"       AI safety check: {'safe' if v.get('safe') else 'UNSAFE'} — {v.get('reason', '')}")
