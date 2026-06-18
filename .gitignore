@@ -6,10 +6,12 @@ backend/.venv/
 .env
 backend/.env
 
-# SQLite (checkpoints + level store)
+# SQLite (checkpoints + level store), incl. WAL/SHM sidecars the running app creates
 *.sqlite
 *.sqlite3
 *.db
+*.sqlite-shm
+*.sqlite-wal
 
 # Generated graph render (regenerate from the compiled graph; see README)
 backend/graph.png
