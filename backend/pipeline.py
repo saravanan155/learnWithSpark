@@ -1,17 +1,16 @@
-"""The Learn with Spark pipeline (B8.5).
+"""The Learn with Spark pipeline (B9).
 
-The research gate now offers REAL human-in-the-loop control, not just a pick. At the gate a person
-can: accept an idea, edit an idea's fields before it proceeds, reject them all and regenerate a
-fresh set (up to a cap, so a picky admin can't loop forever), or abandon entirely if nothing fits
-— a clean exit instead of being forced to accept. Only an idea a human actively endorsed flows on
-to the guardrail and (later) the coding agent. Both model calls still fall back to stubs if Nebius
-is unreachable, so the graph never crashes.
+THREE agents are now real and on different providers — a genuine multi-agent system. Research and
+the guardrail run on Nebius; the new CODING agent runs on Claude (Anthropic) and turns the approved
+idea into a self-contained HTML game (as text). The coding step only ever runs on an idea a human
+endorsed at both gates. Every model call falls back to a stub if its key is missing, so the graph
+never crashes.
 
                  +---------------- regenerate (while attempts < cap) ----------------+
                  v                                                                    |
     research (Nebius) --> pick_idea_gate (PAUSE) --accept/edit--> guardrail (Nebius) --> safety_gate (PAUSE) --+
                                 |                                                                               |
-                              abandon                                       (approved)--> END   (rejected)--> blocked --> END
+                              abandon                            (rejected)--> blocked --> END   (approved)--> coding (Claude) --> END
                                 v
                             abandoned --> END
 """
@@ -26,7 +25,7 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
-from llm import get_nebius, has_nebius
+from llm import claude_model, get_claude, get_nebius, has_anthropic, has_nebius
 
 
 # 1. STATE — a dictionary with known keys. `total=False` means every key is optional,
@@ -40,6 +39,7 @@ class State(TypedDict, total=False):
     chosen_idea: dict[str, Any]  # the one the human accepts (possibly edited) at the gate
     guardrail_result: dict[str, Any]  # the guardrail agent's verdict: {safe, reason, idea}
     approval: dict[str, Any]  # the human's call at the safety gate: {approved: bool}
+    game_code: str  # the coding agent's output: a self-contained HTML game (text)
     halted_reason: str  # set if the run is stopped early (e.g. blocked by the guardrail)
 
 
@@ -339,8 +339,80 @@ def blocked_node(state: State) -> dict:
 # at the safety gate is what decides — it can override the model either way.
 def route_after_safety(state: State) -> str:
     if (state.get("approval") or {}).get("approved"):
-        return END  # approved -> finish
+        return "coding"  # approved -> hand the idea to the coding agent
     return "blocked"  # rejected -> the dead-end
+
+
+# THE CODING AGENT — the THIRD agent, and the first on Claude (Anthropic). It turns the approved
+# idea into a single self-contained HTML game (returned as text — we don't run it yet). Like the
+# other agents it degrades to a stub if its key is missing, so the graph still completes.
+CODING_SYSTEM = (
+    "You are a senior front-end engineer who builds tiny, self-contained educational web games "
+    "for young children (ages 7+). You write clean, modern, dependency-free HTML/CSS/JavaScript "
+    "that runs by simply opening one .html file in a browser — no build step, no external "
+    "libraries, no network calls."
+)
+
+CODING_PROMPT = """Build a playable kids' game level from this approved idea (JSON):
+
+{idea}
+
+Requirements:
+- ONE self-contained HTML file: all CSS and JavaScript inline, no external resources, works offline.
+- Implement the idea's "mechanic" faithfully and use the "example_round" content as the first round.
+- Big friendly controls, cheerful kid-safe colors, minimal reading. Encouraging, gentle feedback
+  for both right and wrong answers (never scary or punishing).
+- Keep it to a single short level a 7-year-old can finish in a minute.
+
+Output ONLY the HTML file contents, starting with <!DOCTYPE html>. No markdown fences, no commentary."""
+
+
+def _strip_code_fences(text: str) -> str:
+    """Drop ```html / ``` fences if the model wrapped the file in a code block."""
+    text = text.strip()
+    if text.startswith("```"):
+        text = text.split("\n", 1)[-1] if "\n" in text else text  # drop the opening ``` line
+        text = text.removesuffix("```").strip()
+    return text
+
+
+def _stub_code(idea: dict) -> str:
+    """Fallback game code when no Anthropic key is set, so the graph still finishes."""
+    title = idea.get("title", "Spark's Game")
+    summary = idea.get("summary", "")
+    return (
+        "<!DOCTYPE html>\n<html><head><meta charset='utf-8'><title>"
+        f"{title}</title></head>\n<body style='font-family:sans-serif;text-align:center'>\n"
+        f"<h1>{title}</h1>\n<p>{summary}</p>\n"
+        "<p><em>(Placeholder — set ANTHROPIC_API_KEY to have Claude build the real game.)</em></p>\n"
+        "</body></html>\n"
+    )
+
+
+def coding_node(state: State) -> dict:
+    """Real coding agent: asks Claude to build the game (stub fallback on any failure)."""
+    idea = state.get("chosen_idea") or {}
+    if not has_anthropic():
+        print("[coding] no ANTHROPIC_API_KEY — using stub game code")
+        return {"game_code": _stub_code(idea)}
+    try:
+        print(f"[coding] asking Claude to build idea {idea.get('id')!r} ...")
+        # Stream + adaptive thinking: code is long, so streaming avoids request timeouts and the
+        # model decides how much to reason. We keep only the text blocks (thinking blocks are empty).
+        with get_claude().messages.stream(
+            model=claude_model(),
+            max_tokens=24000,
+            system=CODING_SYSTEM,
+            thinking={"type": "adaptive"},
+            messages=[{"role": "user", "content": CODING_PROMPT.format(idea=_idea_for_review(idea))}],
+        ) as stream:
+            reply = stream.get_final_message()
+        code = _strip_code_fences("".join(b.text for b in reply.content if b.type == "text"))
+        print(f"[coding] Claude returned {len(code)} chars of game code")
+        return {"game_code": code}
+    except Exception as exc:  # network error, refusal, etc. -> degrade gracefully
+        print(f"[coding] Claude call failed ({exc}); using stub game code")
+        return {"game_code": _stub_code(idea)}
 
 
 # THE CHECKPOINTER — saves state to a SQLite file so it survives across processes/restarts.
@@ -362,6 +434,7 @@ def build_graph(checkpointer=None):
     g.add_node("pick_idea_gate", pick_idea_gate)
     g.add_node("guardrail", guardrail_node)
     g.add_node("safety_gate", safety_gate)
+    g.add_node("coding", coding_node)
     g.add_node("abandoned", abandoned_node)
     g.add_node("blocked", blocked_node)
     g.add_edge(START, "research")  # start -> research
@@ -369,8 +442,9 @@ def build_graph(checkpointer=None):
     # The research gate branches: abandon -> stop, regenerate -> back to research, else -> guardrail.
     g.add_conditional_edges("pick_idea_gate", route_after_pick, ["research", "guardrail", "abandoned"])
     g.add_edge("guardrail", "safety_gate")  # verdict -> second human pause
-    # The conditional edge: the router reads the human's approval -> END or blocked.
-    g.add_conditional_edges("safety_gate", route_after_safety, [END, "blocked"])
+    # The conditional edge: the router reads the human's approval -> coding (Claude) or blocked.
+    g.add_conditional_edges("safety_gate", route_after_safety, ["coding", "blocked"])
+    g.add_edge("coding", END)  # built the game -> done
     g.add_edge("abandoned", END)  # abandoned -> done (stopped, no idea chosen)
     g.add_edge("blocked", END)  # blocked -> done (stopped)
     return g.compile(checkpointer=checkpointer)

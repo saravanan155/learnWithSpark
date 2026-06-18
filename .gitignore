@@ -16,6 +16,9 @@ backend/.env
 # Generated graph render (regenerate from the compiled graph; see README)
 backend/graph.png
 
+# Coding-agent output — generated game HTML files
+backend/generated/
+
 # Editor / OS
 .DS_Store
 .idea/

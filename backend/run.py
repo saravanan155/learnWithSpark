@@ -19,6 +19,7 @@ Usage:
 """
 
 import argparse
+from pathlib import Path
 
 from langgraph.types import Command
 
@@ -154,8 +155,23 @@ def print_final(thread: str, state: dict) -> None:
     print("  chosen_idea =", state.get("chosen_idea"))
     print("  guardrail   =", state.get("guardrail_result"))
     print("  approval    =", state.get("approval"))
+    if state.get("game_code"):
+        print("  game_code   =", f"<{len(state['game_code'])} chars of HTML>")
     if state.get("halted_reason"):
         print("  halted      =", state.get("halted_reason"))
+
+
+def save_game(thread: str, state: dict) -> None:
+    """Write the coding agent's HTML to backend/generated/<thread>.html so it can be opened/played."""
+    code = state.get("game_code")
+    if not code:
+        return
+    out_dir = Path(__file__).resolve().parent / "generated"
+    out_dir.mkdir(exist_ok=True)
+    path = out_dir / f"{thread}.html"
+    path.write_text(code, encoding="utf-8")
+    print(f"\n  🎮 game saved to {path}")
+    print("     open it in a browser to play.")
 
 
 def main():
@@ -193,6 +209,7 @@ def main():
     result = drive(graph, config, args, result)  # handle any remaining pauses
     if result is not None:
         print_final(args.thread, result)
+        save_game(args.thread, result)
 
 
 if __name__ == "__main__":

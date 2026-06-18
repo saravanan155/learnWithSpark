@@ -9,9 +9,9 @@ batches. See **[PLAN.md](PLAN.md)** for the scope, requirements, and the batch-b
 
 ## The pipeline (graph)
 
-Two real agents (research + guardrail) run on Nebius Token Factory, with **two human-in-the-loop
-pauses** (⏸). The graph decides its own next step, can loop, and has clean stop states — it is not
-on rails.
+Three real agents across two providers — research + guardrail on Nebius Token Factory, and the
+coding agent on Claude (Anthropic) — with **two human-in-the-loop pauses** (⏸). The graph decides
+its own next step, can loop, and has clean stop states — it is not on rails.
 
 ```mermaid
 graph TD;
@@ -21,8 +21,9 @@ graph TD;
     pick -. abandon .-> abandoned(["abandoned<br/>(stopped, no idea)"]);
     pick -- "accept / edit" --> guardrail["guardrail agent<br/>(Nebius — kid-safety check)"];
     guardrail --> safety["safety_gate ⏸<br/>(human: approve / override)"];
-    safety -. approved .-> END([end]);
+    safety -. approved .-> coding["coding agent<br/>(Claude — builds the HTML game)"];
     safety -. rejected .-> blocked(["blocked<br/>(stopped, unsafe)"]);
+    coding --> END([end]);
     abandoned --> END;
     blocked --> END;
 ```
@@ -35,6 +36,9 @@ graph TD;
 - **guardrail** — a second model reviews the whole chosen idea for age-7+ safety (stub blocklist
   fallback).
 - **safety_gate** ⏸ — the second human pause. A person **approves** the verdict or **overrides** it.
+- **coding** — the third agent (Claude, via the official Anthropic SDK) turns the approved idea into
+  a self-contained HTML game, saved to `backend/generated/<thread>.html` (stub HTML fallback if no
+  Anthropic key).
 - **abandoned / blocked** — clean terminal stops (gave up at research / failed safety).
 
 > The diagram above is the architecture-diagram deliverable. Regenerate a PNG any time with:
@@ -48,9 +52,13 @@ graph TD;
 
 ```bash
 cd backend
-cp .env.example .env          # add your NEBIUS_API_KEY (optional: it falls back to stub ideas)
-uv run python run.py          # run the pipeline; you'll pick an idea, then approve it
+cp .env.example .env          # add NEBIUS_API_KEY (research/guardrail) + ANTHROPIC_API_KEY (coding)
+uv run python run.py          # run the pipeline; pick an idea, approve it, get a generated game
 ```
+
+Both keys are optional — each agent falls back to a stub when its key is missing, so the graph
+always runs end to end. With both keys set, an approved run writes a playable game to
+`backend/generated/<thread>.html`.
 
 Useful flags (skip the prompts — handy for demos and tests):
 
@@ -63,8 +71,9 @@ uv run python run.py --thread t1 --stop-at-pause # stop at a pause; resume later
 
 ## Status
 
-**B8.5 — research gate has real teeth.** Two real Nebius agents (research + guardrail) and two
-human gates. The research gate supports accept / edit / regenerate (max 3) / abandon, and the
-graph loops or stops accordingly. State is checkpointed to SQLite, so any pause can be resumed
-from a separate process. Next: **B9** — the Claude coding agent that turns a chosen idea into game
-code (see [PLAN.md](PLAN.md)).
+**B9 — the coding agent is real (multi-agent).** Three agents across two providers: research +
+guardrail on Nebius, and a coding agent on Claude (official Anthropic SDK, streaming + adaptive
+thinking) that turns an approved idea into a self-contained HTML game. Two human gates; the research
+gate supports accept / edit / regenerate (max 3) / abandon. State is checkpointed to SQLite, so any
+pause can be resumed from a separate process. Next: **B10** — a testing agent that checks the
+generated code and writes a report (see [PLAN.md](PLAN.md)).
