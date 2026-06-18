@@ -19,7 +19,8 @@ import streamlit as st
 from langgraph.types import Command
 
 from llm import has_nebius
-from pipeline import MAX_RESEARCH_ATTEMPTS, build_graph, make_checkpointer
+from nodes.research_gate import MAX_RESEARCH_ATTEMPTS
+from pipeline import build_graph, make_checkpointer
 
 st.set_page_config(page_title="Learn with Spark — pipeline", page_icon="✨", layout="wide")
 
