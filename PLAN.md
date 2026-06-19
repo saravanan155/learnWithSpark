@@ -27,7 +27,9 @@ creates/publishes is gated.
 - ❌ Not a Scrum/Jira/master-data/SDLC tool.
 - ❌ Not a tutor that narrates its own internals ("watch me use RAG"). The agentic engine is
   **hidden**; the learner just plays games.
-- ❌ Lesson 3 is **knowledge cutoff**, NOT hallucination.
+- ❌ Lesson 3 is **knowledge cutoff**, not hallucination. (Hallucination *is* taught — but in
+  **Lesson 1**, as a from-examples classifier's confident misclassification, which is accurate for a
+  pre-LLM robot. Lesson 3 stays strictly knowledge-cutoff.)
 - ❌ The coding agent does not invent UI freely — it picks from a **fixed set of 4 mechanics**.
 
 ## Two surfaces
@@ -62,8 +64,11 @@ you have not finished."* → error handling + HITL are where the grade is.
 Spark starts with an empty brain. Arc: **See → Talk → Knows-its-limits.** Keep each lesson trivially
 simple — a tiny game that flows flawlessly through the pipeline beats a complex one that breaks.
 
-1. **"Teach Your Robot to See"** (AI learns from examples). Kid teaches Spark ~5 items, quizzes it,
-   then shows it something it was never taught → "I don't know that — you never taught me!" Mechanic:
+1. **"Teach Your Robot to See"** (AI learns from examples — **and** that AI can be confidently wrong).
+   Kid teaches Spark ~5 items, then **quizzes it interactively** (drag an item on; Spark answers): it
+   names taught items correctly, but for untaught items it either **hallucinates** — confidently
+   guesses the nearest taught thing (a cat → "dog!") — or admits "I don't know." **Two takeaways:**
+   *AI only knows what you teach it*, and *it can be confidently wrong (a hallucination)*. Mechanic:
    drag & drop. **This is the hand-built WORKED EXAMPLE (see Build plan).**
 2. **"Teach Your Robot to Talk"** (what an LLM is). Spark fails to finish "The cat sat on the ___"
    until the kid installs a glowing **"Language Brain"** module. Mechanic: fill-in-the-blank + upgrade beat.
