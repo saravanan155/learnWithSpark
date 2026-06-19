@@ -19,6 +19,7 @@ Usage:
 """
 
 import argparse
+import re
 from pathlib import Path
 
 from langgraph.types import Command
@@ -161,14 +162,24 @@ def print_final(thread: str, state: dict) -> None:
         print("  halted      =", state.get("halted_reason"))
 
 
+def _slug(text: str, fallback: str = "level") -> str:
+    """A short, filename-safe slug, e.g. 'How AI learns!' -> 'how-ai-learns'."""
+    slug = re.sub(r"[^a-z0-9]+", "-", (text or "").lower()).strip("-")
+    return slug[:40] or fallback
+
+
 def save_game(thread: str, state: dict) -> None:
-    """Write the coding agent's HTML to backend/generated/<thread>.html so it can be opened/played."""
+    """Save the coding agent's game to its own readable file under backend/generated/, named by
+    concept + chosen idea (e.g. knowledge-cutoff__idea_a.html) so each level is easy to find.
+    The DB is the canonical store later (B13); this on-disk copy is just for dev/play-testing."""
     code = state.get("game_code")
     if not code:
         return
     out_dir = Path(__file__).resolve().parent / "generated"
     out_dir.mkdir(exist_ok=True)
-    path = out_dir / f"{thread}.html"
+    idea = state.get("chosen_idea") or {}
+    name = f"{_slug(state.get('concept', ''))}__{idea.get('id') or thread}"
+    path = out_dir / f"{name}.html"
     path.write_text(code, encoding="utf-8")
     print(f"\n  🎮 game saved to {path}")
     print("     open it in a browser to play.")
