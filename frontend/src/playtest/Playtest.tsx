@@ -7,6 +7,13 @@ import typesSource from "../game/types.ts?raw";
 // hand Sandpack those exact files (read from the real frontend source via ?raw, single source of
 // truth), a tiny host that mounts the level, and Tailwind via the Play CDN so classNames style.
 // The level code itself never runs in the main app — Sandpack is the safety boundary.
+//
+// Sandpack runs in its own iframe, so `/assets/spark/...` would otherwise resolve inside the
+// sandbox and trigger Spark's emoji fallback. For the play-test only, rewrite the shared Spark
+// source to use this app's absolute asset URLs. Generated levels still import `./Spark`; they never
+// reference image URLs directly.
+const assetOrigin = typeof window === "undefined" ? "" : window.location.origin;
+const sandpackSparkSource = sparkSource.replaceAll('"/assets/spark/', `"${assetOrigin}/assets/spark/`);
 
 const HOST_APP = `import { useState } from "react";
 import GameLevel from "./GameLevel";
@@ -59,7 +66,7 @@ export function Playtest({ code }: { code: string }) {
       customSetup={{ dependencies: { "framer-motion": "latest" } }}
       files={{
         "/GameLevel.tsx": code,
-        "/Spark.tsx": sparkSource,
+        "/Spark.tsx": sandpackSparkSource,
         "/types.ts": typesSource,
         "/App.tsx": HOST_APP,
         "/public/index.html": INDEX_HTML,

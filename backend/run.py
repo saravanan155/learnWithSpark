@@ -1,19 +1,20 @@
-"""Run the pipeline, which PAUSES TWICE for a human (B8.5).
+"""Run the pipeline, which PAUSES THREE TIMES for a human (B13).
 
-The graph stops at two gates: first the research gate (accept / edit / regenerate an idea), then
-the safety gate (approve the guardrail's verdict). Each `invoke` runs until the next pause
-(returning an "__interrupt__") or until the end, so we just loop: show the pause, get the human's
-input, resume, repeat. Because state is checkpointed, you can stop at either pause and resume
-later from a separate process.
+The graph stops at three gates: first the research gate (accept / edit / regenerate an idea), then
+the safety gate (approve the guardrail's verdict), then the play-test gate (approve the publish
+WRITE). Each `invoke` runs until the next pause (returning an "__interrupt__") or until the end, so
+we just loop: show the pause, get the human's input, resume, repeat. Because state is checkpointed,
+you can stop at any pause and resume later from a separate process.
 
 Usage:
     cd backend
-    uv run python run.py                              # interactive: pick/edit/regenerate, then approve
-    uv run python run.py --pick idea_b --approve      # accept idea_b + auto-approve (no prompts)
+    uv run python run.py                              # interactive: pick/edit/regenerate, approve, publish
+    uv run python run.py --pick idea_b --approve --publish  # accept idea_b + approve + publish
     uv run python run.py --regenerate --approve       # reject the first set(s), then accept on the last
     uv run python run.py --abandon                    # give up at the research gate (no idea chosen)
     uv run python run.py --pick idea_a --edit "summary=Sort the animal cards" --approve  # edit then go
     uv run python run.py --pick idea_a --reject       # accept, but reject at the safety gate
+    uv run python run.py --pick idea_a --approve --reject-play-test  # build, then reject at Gate 3
     uv run python run.py --thread t1 --stop-at-pause  # run to the next pause, then exit
     uv run python run.py --thread t1 --resume         # resume that paused thread
 """
@@ -32,6 +33,11 @@ def is_pick_gate(payload: dict) -> bool:
     return "options" in payload
 
 
+def is_play_test_gate(payload: dict) -> bool:
+    """Gate 3 identifies itself by stage; it carries generated code metadata, not a verdict."""
+    return payload.get("stage") == "play_test"
+
+
 def announce(payload: dict) -> None:
     print(f"\n  ⏸  PAUSED — {payload.get('question')}")
     if is_pick_gate(payload):
@@ -44,6 +50,9 @@ def announce(payload: dict) -> None:
             print(f"           {o.get('summary', '')}")
             if o.get("concept"):
                 print(f"           teaches → {o['concept']}")
+    elif is_play_test_gate(payload):
+        print(f"       Generated GameLevel.tsx: {payload.get('code_chars', 0)} chars")
+        print("       Play it in the frontend Sandpack tab, then approve only if it is shippable.")
     else:
         v = payload.get("verdict", {})
         print(f"       AI safety check: {'safe' if v.get('safe') else 'UNSAFE'} — {v.get('reason', '')}")
@@ -123,10 +132,25 @@ def decide_approval(verdict: dict, args) -> bool:
     return default if not answer else answer.startswith("y")
 
 
+def decide_play_test(args) -> bool:
+    """Approve Gate 3. Publishing is a write, so the non-interactive default is deliberately no."""
+    if args.publish:
+        return True
+    if args.reject_play_test:
+        return False
+    try:
+        answer = input("     publish this play-tested level? [y/N]: ").strip().lower()
+    except EOFError:
+        return False
+    return answer.startswith("y")
+
+
 def resume_value(payload: dict, args) -> dict:
     """Turn the human's input for this gate into the value we resume the graph with."""
     if is_pick_gate(payload):
         return pick_decision(payload, args)
+    if is_play_test_gate(payload):
+        return {"approved": decide_play_test(args)}
     return {"approved": decide_approval(payload.get("verdict", {}), args)}
 
 
@@ -164,6 +188,9 @@ def print_final(thread: str, state: dict) -> None:
         print("  test        =", state.get("test_results"))
     if state.get("repair_count"):
         print("  repairs     =", state.get("repair_count"), "—", state.get("error_log"))
+    print("  play_test   =", state.get("play_test_approved"))
+    if state.get("published"):
+        print("  published   =", state.get("published"))
     if state.get("halted_reason"):
         print("  halted      =", state.get("halted_reason"))
 
@@ -177,8 +204,8 @@ def _slug(text: str, fallback: str = "level") -> str:
 def save_game(thread: str, state: dict) -> None:
     """Save the coding agent's React component to its own readable file under backend/generated/,
     named by concept + chosen idea (e.g. knowledge-cutoff__idea_a.tsx) so each level is easy to
-    find. The DB is the canonical store later (B13); this on-disk copy is for dev/play-testing
-    (rendered in Sandpack at B10)."""
+    find. The SQLite level store is canonical after publish; this on-disk copy is for dev
+    play-testing (rendered in Sandpack at B10)."""
     code = state.get("game_code")
     if not code:
         return
@@ -205,6 +232,8 @@ def main():
                     help="edit the picked idea before proceeding, e.g. --edit \"summary=...\"; repeatable")
     ap.add_argument("--approve", action="store_true", help="auto-approve at the safety gate")
     ap.add_argument("--reject", action="store_true", help="auto-reject at the safety gate")
+    ap.add_argument("--publish", action="store_true", help="auto-approve Gate 3 and publish to SQLite")
+    ap.add_argument("--reject-play-test", action="store_true", help="auto-reject at Gate 3 (no publish)")
     ap.add_argument("--stop-at-pause", action="store_true", help="stop at the next pause; resume later")
     ap.add_argument("--resume", action="store_true", help="resume a thread paused at a gate")
     args = ap.parse_args()

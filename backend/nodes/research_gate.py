@@ -42,9 +42,17 @@ def pick_idea_gate(state: State) -> dict:
         print(f"[gate] human rejected all ideas (attempt {attempt}) — regenerating")
         return {"regenerate": True}
 
-    # Otherwise accept one idea (optionally with edits applied on top).
+    # Otherwise accept one idea (optionally replacing it with a fully edited LessonSpec).
     chosen_id = decision.get("chosen_id")
     chosen = next((i for i in ideas if i["id"] == chosen_id), ideas[0] if ideas else {})
+    edited_idea = decision.get("edited_idea")
+    if isinstance(edited_idea, dict):
+        chosen = dict(edited_idea)
+        chosen.setdefault("id", chosen_id or (ideas[0]["id"] if ideas else "idea_a"))
+        print(f"[gate] human edited full LessonSpec for idea {chosen.get('id')!r}")
+        return {"chosen_idea": chosen, "regenerate": False}
+
+    # Backward-compatible path for the CLI's --edit FIELD=VALUE pairs.
     edits = decision.get("edits") or {}
     if edits:
         chosen = {**chosen, **edits}  # human's edits win over the model's text

@@ -34,8 +34,9 @@ creates/publishes is gated.
 
 ## Two surfaces
 
-- **Learner side (keep simple):** loads published levels from the DB, plays lessons, tracks
-  progress/mastery. First build just needs to load + play ONE generated level end-to-end.
+- **Learner side (keep simple):** plays the lesson sequence. In the current demo build, approved
+  Admin publishes append generated React levels into the frontend sequence; the target version can
+  load published levels from the DB and track progress/mastery.
 - **Admin side (the agentic showpiece, owner-only):** owner types a concept; the pipeline co-creates
   a level *with* the human through three approval gates; publish; revise later.
 
@@ -138,8 +139,8 @@ L3 unsure→confident. The agent only chooses *when* to show which mood.
 6. CODING agent (Claude) → React GameLevel.tsx for the chosen mechanic
 7. TESTING agent → static checks + sandbox tests (+ optional judge); REPAIR loop on failure (max 3) → escalate
 8. [GATE 3 — PLAY-TEST]       owner plays the built level in Sandpack; approve/reject
-9. PUBLISH → live in the DB
-10. DB stores versioned levels + learner progress
+9. PUBLISH → live in SQLite and appended to the learner game sequence
+10. DB stores versioned levels; frontend sequence makes approved levels playable in the demo
 ```
 
 **Why three gates:** idea-level, content-accuracy-level (catch misinformation *before* it becomes a
@@ -152,11 +153,10 @@ research_node (Nebius)
   → [interrupt GATE 1 pick]
   → guardrail_node (chosen idea only)
   → [interrupt GATE 2 final approval]
-  → write_tests_node (failing tests first, TDD)
   → coding_node (Claude → GameLevel.tsx)
   → static_check_node (deterministic)
-  → test_node (sandbox run + optional Nebius judge)
-       ├ pass → [interrupt GATE 3 play-test] → publish_node → DB
+  → test_node (optional Nebius judge)
+       ├ pass → [interrupt GATE 3 play-test] → publish_node → SQLite + frontend levels
        └ fail → repair_node (Claude + EXACT error) → static_check_node
                  (repair_count ≥ 3 → escalate_node → human)
 ```
@@ -164,20 +164,21 @@ research_node (Nebius)
 ```python
 class LevelCreationState(TypedDict):
     concept: str
-    research_summary: str
     idea_options: list[dict]
+    research_attempts: int
+    regenerate: bool
+    abandoned: bool
     chosen_idea: dict | None
     guardrail_result: dict | None
-    lesson_spec: dict | None
-    failing_tests: str | None
-    generated_code: str | None
+    approval: dict | None
+    game_code: str | None
+    static_check: dict | None
     test_results: dict | None
     repair_count: int
     error_log: list[str]
-    approved_for_build: bool
     play_test_approved: bool
-    base_level_id: str | None     # set when revising an existing level
-    revisit_mode: str | None      # "full" | "light" | None
+    published: dict | None
+    halted_reason: str | None
 ```
 
 Primitives: `SqliteSaver` (one `thread_id` per run), `interrupt()` + `Command(resume=...)` at each
@@ -204,11 +205,13 @@ When `coding_node` fires, give Claude ALL of: the approved `LessonSpec` + the co
 
 ## Testing (deterministic + a different-family judge)
 
-Use a **different model family to test than to generate** (avoids self-preference blind spots).
+Use deterministic checks plus a **different model family to test than to generate** where available
+(avoids self-preference blind spots).
 - **Mechanical checks — NOT an LLM:** parses? imports in allowlist? exports `GameLevel`? renders
   without throwing? known-correct solution triggers a win? wrong answer triggers feedback?
 - **Subjective judgment — Nebius, binary PASS/FAIL:** winnable? teaches the concept? age-appropriate?
-- **TDD:** write the failing tests FIRST (from the spec), then run them against the generated code.
+- **Current demo implementation:** `static_check_node` enforces the contract/import/safety basics,
+  and `test_node` runs the optional Nebius judge. Full browser-generated TDD tests remain deferred.
 
 ## Repair loop (the most gradeable behavior — protect time for it)
 
@@ -235,23 +238,23 @@ B5 human pause (pick) · B6 conditional route.
 |---|---|---|
 | B7 | Nebius `research` calls a real model | ✓ done |
 | B8 | `guardrail` real model + its approval gate (= Gate 2) | ✓ done |
-| B8.5 | Research gate: accept / edit / regenerate (max 3) / abandon | ✓ done |
+| B8.5 | Research gate: accept / full LessonSpec JSON edit / regenerate (max 3) / abandon | ✓ done |
 
 > **Realignment debt:** B7–B8.5 used an interim idea schema + a 7-mechanic, HTML-leaning prompt, and
 > the interim B9 emitted standalone HTML. As we move into Phase C these get realigned to the
 > **`LessonSpec` schema**, the **4 fixed mechanics**, and **React** output.
 
-### Phase C — playable React levels (the target core)
-| # | Batch |
-|---|---|
-| B9 | **Coding agent → React.** Build the component contract + the hand-built Lesson-1 worked example + `<Spark>` wrapper + 6 mascot PNGs; switch `research` to `LessonSpec` + 4 mechanics; `coding_node` (Claude) emits `GameLevel.tsx`. *(supersedes the interim HTML B9)* |
-| B10 | **Sandpack render** — render a `GameLevel.tsx` string in an isolated iframe; prove it plays |
-| B11 | **TDD testing** — `write_tests_node` + `static_check_node` + `test_node` (+ optional Nebius judge) |
-| B12 | **Repair loop + escalate** — exact-error feedback, max 3 |
-| B13 | **Gate 3 play-test + publish** — versioned SQLite level store |
-| B14 | **Revisit / edit + versioning** — full/light, atomic swap, status |
-| B15 | **FastAPI + UI** — `/start` `/resume` `/stream` (SSE) + admin UI (MVP = chat/left column) + minimal learner UI |
-| B16 | **LangSmith tracing** + optional LLM-as-judge eval |
+### Phase C — playable React levels
+| # | Batch | Status |
+|---|---|---|
+| B9 | **Coding agent → React.** Build the component contract + the hand-built Lesson-1 worked example + `<Spark>` wrapper + 6 mascot PNGs; switch `research` to `LessonSpec` + 4 mechanics; `coding_node` (Claude) emits `GameLevel.tsx`. *(supersedes the interim HTML B9)* | ✓ done |
+| B10 | **Sandpack render** — render a `GameLevel.tsx` string in an isolated iframe; prove it plays | ✓ done |
+| B11 | **Testing** — `static_check_node` + `test_node` (+ optional Nebius judge). Full browser-generated TDD tests are deferred. | ✓ demo-ready |
+| B12 | **Repair loop + escalate** — exact-error feedback, max 3 | ✓ done |
+| B13 | **Gate 3 play-test + publish** — versioned SQLite level store + frontend sequence append | ✓ done |
+| B14 | **Revisit / edit + versioning** — full/light, atomic swap, status | deferred |
+| B15 | **FastAPI + UI** — `/start` `/resume` `/stream` (SSE) + admin UI (MVP = chat/left column) + minimal learner UI | deferred |
+| B16 | **LangSmith tracing** + optional LLM-as-judge eval | deferred |
 
 ### Phase D — stretch (only after C is solid)
 B17 — **MCP & tool-calling:** (a) research as a **ReAct bound-tool agent** (`web_search`, `fetch_page`,
@@ -282,6 +285,12 @@ human-approval interrupts. Do NOT start until the core generate→test→repair 
 ```bash
 cd backend
 cp .env.example .env                 # NEBIUS_API_KEY (research/guardrail) + ANTHROPIC_API_KEY (coding)
-uv run python run.py                 # CLI: pick an idea, approve, get a generated game (stub w/o keys)
+uv run python run.py --pick idea_a --approve --publish  # CLI: build, Gate 3 approve, publish
 uv run streamlit run app.py          # interim admin UI: drive + watch each step
+
+cd ../frontend
+npm run dev                          # welcome page, learner game sequence, and Sandpack play-test
 ```
+
+Current demo learner sequence: hand-built Lesson 1 plus the published Lesson 2 ("Spark's Sentence
+Helper"). The next approved Admin publish appends the next sequential lesson.

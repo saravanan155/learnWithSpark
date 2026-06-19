@@ -1,20 +1,22 @@
-"""The Learn with Spark graph (B12) — wiring only.
+"""The Learn with Spark graph (B13) — wiring only.
 
 The agents, gates, and dead-ends each live in their own module under `nodes/`; this file just
 imports them and assembles the LangGraph, plus the SQLite checkpointer. Research + guardrail run on
 Nebius, coding/repair on Claude, and the testing agent uses deterministic checks + a Nebius judge.
-On a test failure the repair loop feeds the exact errors back to Claude (capped) before escalating.
-Every model call falls back to a stub if its key is missing, so the graph never crashes.
+On a test failure the repair loop feeds the exact errors back to Claude (capped) before escalating;
+on a pass, Gate 3 pauses for a human play-test before the gated publish write. Every model call
+falls back to a stub if its key is missing, so the graph never crashes.
 
     research --> pick_idea_gate (PAUSE) --accept/edit--> guardrail --> safety_gate (PAUSE)
       ^   |                                                                     |
       |  abandon --> abandoned --> END                  (rejected)--> blocked --> END
       |   (regenerate, < cap)                           (approved)
       +---------------------------------+                    v
-                                        |   coding (Claude) --> static_check --> test --+--(pass)--> END
+                                        |   coding (Claude) --> static_check --> test --+--(pass)--> play_test (PAUSE)
                                         |        ^                                       |
                                         |        +--------- repair (Claude) <--(fail, < cap)
                                         |                                       (fail, >= cap) --> escalate --> END
+                                        |   play_test --approved--> publish --> END
 """
 
 import sqlite3
@@ -25,6 +27,7 @@ from langgraph.graph import END, START, StateGraph
 
 from nodes.coding import coding_node, repair_node
 from nodes.guardrail import guardrail_node
+from nodes.publish import play_test_node, publish_node, route_after_play_test
 from nodes.research import research_node
 from nodes.research_gate import pick_idea_gate, route_after_pick
 from nodes.safety_gate import route_after_safety, safety_gate
@@ -56,6 +59,8 @@ def build_graph(checkpointer=None):
     g.add_node("static_check", static_check_node)
     g.add_node("test", test_node)
     g.add_node("repair", repair_node)
+    g.add_node("play_test", play_test_node)
+    g.add_node("publish", publish_node)
     g.add_node("abandoned", abandoned_node)
     g.add_node("blocked", blocked_node)
     g.add_node("escalate", escalate_node)
@@ -68,9 +73,12 @@ def build_graph(checkpointer=None):
     g.add_conditional_edges("safety_gate", route_after_safety, ["coding", "blocked"])
     g.add_edge("coding", "static_check")  # built -> deterministic checks
     g.add_edge("static_check", "test")  # checks -> quality judge
-    # The repair loop: pass -> done, fail -> repair (until the cap) -> escalate.
-    g.add_conditional_edges("test", route_after_test, [END, "repair", "escalate"])
+    # The repair loop: pass -> play-test gate, fail -> repair (until the cap) -> escalate.
+    g.add_conditional_edges("test", route_after_test, ["play_test", "repair", "escalate"])
     g.add_edge("repair", "static_check")  # re-check the fixed code
+    # The publish write only happens after the human approves Gate 3.
+    g.add_conditional_edges("play_test", route_after_play_test, ["publish", END])
+    g.add_edge("publish", END)
     g.add_edge("abandoned", END)  # abandoned -> done (stopped, no idea chosen)
     g.add_edge("blocked", END)  # blocked -> done (stopped)
     g.add_edge("escalate", END)  # couldn't converge -> done (handed to a human)

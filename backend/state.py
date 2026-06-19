@@ -24,6 +24,8 @@ class State(TypedDict, total=False):
     test_results: dict[str, Any]  # the quality judge's verdict: {passed: bool, reason: str}
     repair_count: int  # how many times the repair node has tried to fix the code (capped)
     error_log: list[str]  # one line per failed attempt — fed back to the coder, and an audit trail
+    play_test_approved: bool  # the human's call at the play-test gate (Gate 3)
+    published: dict[str, Any]  # the published level record: {level_id, version, status, title}
     halted_reason: str  # set if the run is stopped early (e.g. blocked by the guardrail)
 
 

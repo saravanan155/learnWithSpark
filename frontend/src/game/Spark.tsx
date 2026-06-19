@@ -45,7 +45,7 @@ export function Spark({ mood, className = "" }: { mood: SparkMood; className?: s
       src={SPARK_IMAGES[mood]}
       alt={`Spark the robot, feeling ${mood}`}
       onError={() => setFailed(true)}
-      className={`select-none pointer-events-none ${className}`}
+      className={`select-none pointer-events-none object-contain ${className}`}
     />
   );
 }

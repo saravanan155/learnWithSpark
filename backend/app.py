@@ -1,17 +1,20 @@
-"""A tiny Streamlit front end to drive and WATCH the pipeline (B8.5).
+"""A tiny Streamlit front end to drive and WATCH the pipeline (B13).
 
 Run it from the backend folder:
 
     cd backend
     uv run streamlit run app.py
 
-It lets you start a run, then step through the two human gates (pick an idea, approve the safety
-verdict) with buttons — and it shows the per-step logs each node prints, so you can see exactly
-what happened at every transition. State lives in the same SQLite checkpointer the CLI uses, keyed
-by a per-run thread id, so Streamlit's reruns don't lose the paused graph.
+It lets you start a run, then step through the three human gates (pick an idea, approve the safety
+verdict, approve the play-tested publish) with buttons — and it shows the per-step logs each node
+prints, so you can see exactly what happened at every transition. State lives in the same SQLite
+checkpointer the CLI uses, keyed by a per-run thread id, so Streamlit's reruns don't lose the
+paused graph.
 """
 
 import io
+import json
+import os
 import uuid
 from contextlib import redirect_stdout
 
@@ -24,9 +27,7 @@ from pipeline import build_graph, make_checkpointer
 
 st.set_page_config(page_title="Learn with Spark — pipeline", page_icon="✨", layout="wide")
 
-# Editable fields offered in the "edit an idea" form (text fields only — nested structures like
-# example_round are left to the coding agent).
-EDITABLE_FIELDS = ["title", "summary", "mechanic", "teaches", "aha_moment", "analogy"]
+GAME_URL = os.getenv("LEARN_WITH_SPARK_GAME_URL", "http://127.0.0.1:5173/#game")
 
 
 @st.cache_resource
@@ -53,7 +54,12 @@ def _route(result: dict):
     if "__interrupt__" in result:
         payload = result["__interrupt__"][0].value
         st.session_state.payload = payload
-        st.session_state.phase = "pick" if "options" in payload else "safety"
+        if "options" in payload:
+            st.session_state.phase = "pick"
+        elif payload.get("stage") == "play_test":
+            st.session_state.phase = "play_test"
+        else:
+            st.session_state.phase = "safety"
     else:
         st.session_state.phase = "done"
         st.session_state.payload = None
@@ -89,10 +95,8 @@ def render_idea(o: dict):
     items = o.get("items") or []
     if items:
         st.caption("Items: " + "  ".join(f"{it.get('imageHint', '')} {it.get('label', '')}" for it in items))
-    extra = {k: o[k] for k in ("solution", "feedback", "sparkMoods") if o.get(k)}
-    if extra:
-        with st.expander("Spec details"):
-            st.json(extra)
+    with st.expander("Full LessonSpec sent forward"):
+        st.json(o)
 
 
 def render_pick():
@@ -124,14 +128,26 @@ def render_pick():
         resume({"action": "abandon"}, "abandon → stop")
         st.rerun()
 
-    with st.expander(f"✏️ Edit “{titles[chosen_id]}” before accepting"):
+    with st.expander(f"✏️ Edit full LessonSpec for “{titles[chosen_id]}” before accepting"):
         with st.form("edit_form"):
-            new_values = {f: st.text_input(f, value=str(chosen.get(f, ""))) for f in EDITABLE_FIELDS}
+            edited_json = st.text_area(
+                "This full JSON object is what guardrail reviews and what the coding agent receives.",
+                value=json.dumps(chosen, indent=2, ensure_ascii=False),
+                height=560,
+                key=f"lesson_spec_editor_{p.get('attempt')}_{chosen_id}",
+            )
             if st.form_submit_button("Apply edits & accept"):
-                edits = {f: v for f, v in new_values.items() if v != str(chosen.get(f, ""))}
-                resume({"action": "edit", "chosen_id": chosen_id, "edits": edits},
-                       f"edit {chosen_id} ({', '.join(edits) or 'no change'}) → guardrail")
-                st.rerun()
+                try:
+                    edited = json.loads(edited_json)
+                    if not isinstance(edited, dict):
+                        raise ValueError("LessonSpec must be a JSON object.")
+                    edited.setdefault("id", chosen_id)
+                except (json.JSONDecodeError, ValueError) as exc:
+                    st.error(f"Fix the JSON before accepting: {exc}")
+                else:
+                    resume({"action": "edit", "chosen_id": chosen_id, "edited_idea": edited},
+                           f"edit full spec {chosen_id} → guardrail")
+                    st.rerun()
 
 
 def render_safety():
@@ -144,11 +160,31 @@ def render_safety():
     st.caption("The model only recommends — you make the final call, and can override it.")
 
     c1, c2 = st.columns(2)
-    if c1.button("✅ Approve & finish", type="primary", use_container_width=True):
-        resume({"approved": True}, "approve → END")
+    if c1.button("✅ Approve & build", type="primary", use_container_width=True):
+        resume({"approved": True}, "approve → coding/testing")
         st.rerun()
     if c2.button("🚫 Reject (block)", use_container_width=True):
         resume({"approved": False}, "reject → blocked")
+        st.rerun()
+
+
+def render_play_test():
+    state = get_graph().get_state(_config()).values
+    code = state.get("game_code", "")
+    p = st.session_state.payload or {}
+    st.subheader("🎮 Play-test gate — approve publish")
+    st.caption(
+        f"Generated GameLevel.tsx: {p.get('code_chars', len(code))} chars. "
+        "Play it in the frontend Sandpack tab before publishing."
+    )
+    st.text_area("Generated GameLevel.tsx", value=code, height=320)
+
+    c1, c2 = st.columns(2)
+    if c1.button("✅ Publish to SQLite", type="primary", use_container_width=True):
+        resume({"approved": True}, "play-test approved → publish")
+        st.rerun()
+    if c2.button("🚫 Reject", use_container_width=True):
+        resume({"approved": False}, "play-test rejected → stop")
         st.rerun()
 
 
@@ -157,16 +193,30 @@ def render_done():
     st.subheader("🏁 Run finished")
     if state.get("halted_reason"):
         st.warning(f"Stopped: {state['halted_reason']}")
+    elif state.get("published"):
+        p = state["published"]
+        st.success(f"Published `{p['level_id']}` v{p['version']} to SQLite.")
+        frontend_lesson = p.get("frontend_lesson") or {}
+        if frontend_lesson:
+            st.info(
+                f"Added to learner game as Lesson {frontend_lesson.get('lesson_number')}: "
+                f"{frontend_lesson.get('title')}. If the Vite app is running, it should hot-reload."
+            )
+        st.link_button("Open game mode", GAME_URL, type="primary")
     else:
-        st.success("Idea approved — ready for the coding agent (B9).")
+        st.success("Run completed.")
 
     if state.get("chosen_idea"):
         with st.container(border=True):
             render_idea(state["chosen_idea"])
     with st.expander("Full final state"):
-        st.json({k: state.get(k) for k in
-                 ("concept", "research_attempts", "chosen_idea", "guardrail_result",
-                  "approval", "halted_reason")})
+        st.json({
+            **{k: state.get(k) for k in
+               ("concept", "research_attempts", "chosen_idea", "guardrail_result",
+                "approval", "static_check", "test_results", "repair_count",
+                "play_test_approved", "published", "halted_reason")},
+            "game_code_chars": len(state.get("game_code", "") or ""),
+        })
 
 
 def render_logs():
@@ -190,6 +240,8 @@ if "phase" not in st.session_state:
 with st.sidebar:
     st.header("✨ Learn with Spark")
     st.caption("Drive the multi-agent pipeline and watch each step.")
+    st.link_button("Open game mode", GAME_URL, use_container_width=True)
+    st.divider()
     if has_nebius():
         st.success("Nebius key detected — real agents.")
     else:
@@ -220,6 +272,8 @@ with left:
         render_pick()
     elif phase == "safety":
         render_safety()
+    elif phase == "play_test":
+        render_play_test()
     elif phase == "done":
         render_done()
 with right:

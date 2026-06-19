@@ -85,7 +85,7 @@ def _stub_code(idea: dict) -> str:
         f'  const [mood, setMood] = useState<SparkMood>("{start}");\n'
         "  return (\n"
         '    <div className="flex flex-col items-center gap-4 p-6 text-center">\n'
-        '      <Spark mood={mood} className="h-28 w-28" />\n'
+        '      <Spark mood={mood} className="h-40 w-60 max-w-full" />\n'
         f"      <h1 className=\"text-2xl font-bold\">{title}</h1>\n"
         f"      <p className=\"text-slate-600\">{prompt}</p>\n"
         "      <button\n"

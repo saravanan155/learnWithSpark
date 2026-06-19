@@ -130,9 +130,9 @@ export default function GameLevel({ onComplete, onProgress }: GameLevelProps) {
           ref={dropRef}
           animate={{ scale: mood === "proud" || mood === "confident" ? 1.07 : 1 }}
           transition={{ type: "spring", stiffness: 300, damping: 15 }}
-          className="flex h-44 w-44 items-center justify-center rounded-3xl bg-sky-100 ring-4 ring-sky-200"
+          className="flex h-56 w-80 max-w-[88vw] items-center justify-center rounded-3xl bg-sky-100 ring-4 ring-sky-200"
         >
-          <Spark mood={mood} className="h-28 w-28" />
+          <Spark mood={mood} className="h-52 w-80 max-w-full" />
         </motion.div>
         <AnimatePresence mode="wait">
           <motion.div
