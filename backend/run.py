@@ -157,7 +157,7 @@ def print_final(thread: str, state: dict) -> None:
     print("  guardrail   =", state.get("guardrail_result"))
     print("  approval    =", state.get("approval"))
     if state.get("game_code"):
-        print("  game_code   =", f"<{len(state['game_code'])} chars of HTML>")
+        print("  game_code   =", f"<{len(state['game_code'])} chars of GameLevel.tsx>")
     if state.get("halted_reason"):
         print("  halted      =", state.get("halted_reason"))
 
@@ -169,9 +169,10 @@ def _slug(text: str, fallback: str = "level") -> str:
 
 
 def save_game(thread: str, state: dict) -> None:
-    """Save the coding agent's game to its own readable file under backend/generated/, named by
-    concept + chosen idea (e.g. knowledge-cutoff__idea_a.html) so each level is easy to find.
-    The DB is the canonical store later (B13); this on-disk copy is just for dev/play-testing."""
+    """Save the coding agent's React component to its own readable file under backend/generated/,
+    named by concept + chosen idea (e.g. knowledge-cutoff__idea_a.tsx) so each level is easy to
+    find. The DB is the canonical store later (B13); this on-disk copy is for dev/play-testing
+    (rendered in Sandpack at B10)."""
     code = state.get("game_code")
     if not code:
         return
@@ -179,10 +180,10 @@ def save_game(thread: str, state: dict) -> None:
     out_dir.mkdir(exist_ok=True)
     idea = state.get("chosen_idea") or {}
     name = f"{_slug(state.get('concept', ''))}__{idea.get('id') or thread}"
-    path = out_dir / f"{name}.html"
+    path = out_dir / f"{name}.tsx"
     path.write_text(code, encoding="utf-8")
-    print(f"\n  🎮 game saved to {path}")
-    print("     open it in a browser to play.")
+    print(f"\n  🎮 GameLevel.tsx saved to {path}")
+    print("     (render it in the frontend / Sandpack to play-test — B10)")
 
 
 def main():

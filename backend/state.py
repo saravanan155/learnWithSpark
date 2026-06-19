@@ -19,7 +19,7 @@ class State(TypedDict, total=False):
     chosen_idea: dict[str, Any]  # the one the human accepts (possibly edited) at the gate
     guardrail_result: dict[str, Any]  # the guardrail agent's verdict: {safe, reason, idea}
     approval: dict[str, Any]  # the human's call at the safety gate: {approved: bool}
-    game_code: str  # the coding agent's output: a self-contained HTML game (text)
+    game_code: str  # the coding agent's output: a React GameLevel.tsx (text)
     halted_reason: str  # set if the run is stopped early (e.g. blocked by the guardrail)
 
 
