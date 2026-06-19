@@ -12,8 +12,13 @@ Two parts, on purpose (PLAN.md → "Testing"):
 import json
 import re
 
+from langgraph.graph import END
+
 from llm import get_nebius, has_nebius
 from state import State, idea_to_json
+
+# How many times the repair node may try to fix a failing level before we escalate to a human.
+MAX_REPAIRS = 3
 
 # The only imports a generated level may use (PLAN.md → "The component contract").
 ALLOWED_IMPORTS = {"react", "framer-motion", "./Spark", "./types"}
@@ -83,3 +88,14 @@ def test_node(state: State) -> dict:
         verdict = {"passed": True, "reason": f"judge unavailable ({exc})"}
     print(f"[test] judge: {'PASS' if verdict['passed'] else 'FAIL'} — {verdict['reason']}")
     return {"test_results": verdict}
+
+
+# THE TESTING ROUTER (B12) — pass -> done; fail -> repair (until the cap) -> escalate.
+def route_after_test(state: State) -> str:
+    static_ok = (state.get("static_check") or {}).get("ok")
+    judged_ok = (state.get("test_results") or {}).get("passed")
+    if static_ok and judged_ok:
+        return END  # the level passed both gates -> done
+    if state.get("repair_count", 0) < MAX_REPAIRS:
+        return "repair"  # fix the exact failures and re-check
+    return "escalate"  # couldn't converge -> hand to a human

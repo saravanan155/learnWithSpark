@@ -162,6 +162,8 @@ def print_final(thread: str, state: dict) -> None:
         print("  static_check =", state.get("static_check"))
     if state.get("test_results"):
         print("  test        =", state.get("test_results"))
+    if state.get("repair_count"):
+        print("  repairs     =", state.get("repair_count"), "—", state.get("error_log"))
     if state.get("halted_reason"):
         print("  halted      =", state.get("halted_reason"))
 

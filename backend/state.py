@@ -22,6 +22,8 @@ class State(TypedDict, total=False):
     game_code: str  # the coding agent's output: a React GameLevel.tsx (text)
     static_check: dict[str, Any]  # deterministic checks on game_code: {ok: bool, problems: [...]}
     test_results: dict[str, Any]  # the quality judge's verdict: {passed: bool, reason: str}
+    repair_count: int  # how many times the repair node has tried to fix the code (capped)
+    error_log: list[str]  # one line per failed attempt — fed back to the coder, and an audit trail
     halted_reason: str  # set if the run is stopped early (e.g. blocked by the guardrail)
 
 

@@ -15,3 +15,11 @@ def abandoned_node(state: State) -> dict:
 def blocked_node(state: State) -> dict:
     print("[blocked] idea not approved for kids — stopping, not building.")
     return {"halted_reason": "idea was not approved as kid-safe at the safety gate"}
+
+
+# THE ESCALATE node (B12) — the dead-end when the repair loop can't make the level pass. Rather
+# than ship broken code or loop forever, stop and hand it to a human.
+def escalate_node(state: State) -> dict:
+    n = state.get("repair_count", 0)
+    print(f"[escalate] still failing after {n} repair attempt(s) — needs a human.")
+    return {"halted_reason": f"coding/testing could not converge after {n} repair attempt(s) — escalated"}
