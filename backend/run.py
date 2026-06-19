@@ -42,8 +42,8 @@ def announce(payload: dict) -> None:
             mech = f"  [{o['mechanic']}]" if o.get("mechanic") else ""
             print(f"       · {o['id']}: {o.get('title', o['id'])}{mech}")
             print(f"           {o.get('summary', '')}")
-            if o.get("aha_moment"):
-                print(f"           aha → {o['aha_moment']}")
+            if o.get("concept"):
+                print(f"           teaches → {o['concept']}")
     else:
         v = payload.get("verdict", {})
         print(f"       AI safety check: {'safe' if v.get('safe') else 'UNSAFE'} — {v.get('reason', '')}")

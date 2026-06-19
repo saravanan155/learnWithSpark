@@ -75,24 +75,24 @@ def resume(decision: dict, label: str):
 # ---------- rendering helpers ----------
 
 def render_idea(o: dict):
-    """Show one idea's full spec."""
+    """Show one LessonSpec idea."""
     mech = o.get("mechanic", "?")
     st.markdown(f"**{o.get('title', o['id'])}**  ·  `{mech}`  ·  _{o['id']}_")
     if o.get("summary"):
         st.write(o["summary"])
-    if o.get("teaches"):
-        st.caption(f"🎯 Teaches: {o['teaches']}")
-    if o.get("aha_moment"):
-        st.caption(f"💡 Aha: {o['aha_moment']}")
-    if o.get("analogy"):
-        st.caption(f"🔗 Analogy: {o['analogy']}")
-    if o.get("how_to_play"):
-        st.caption("How to play: " + " → ".join(o["how_to_play"]))
-    if o.get("example_round"):
-        with st.expander("Example round"):
-            st.json(o["example_round"])
-    if o.get("is_multi_part") and o.get("suggested_next_levels"):
-        st.info("Deep concept — suggested next levels: " + ", ".join(o["suggested_next_levels"]))
+    if o.get("concept"):
+        st.caption(f"🎯 Teaches: {o['concept']}")
+    if o.get("story"):
+        st.caption(f"💬 {o['story']}")
+    if o.get("prompt"):
+        st.caption(f"🎮 {o['prompt']}")
+    items = o.get("items") or []
+    if items:
+        st.caption("Items: " + "  ".join(f"{it.get('imageHint', '')} {it.get('label', '')}" for it in items))
+    extra = {k: o[k] for k in ("solution", "feedback", "sparkMoods") if o.get(k)}
+    if extra:
+        with st.expander("Spec details"):
+            st.json(extra)
 
 
 def render_pick():
