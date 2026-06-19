@@ -2,6 +2,7 @@ import type { ComponentType } from "react";
 import type { GameLevelProps } from "../types";
 import Lesson1 from "./lesson1-see";
 import Lesson2 from "./lesson2-spark-s-sentence-helper";
+import Lesson3 from "./lesson3-which-one-doesn-t-belong";
 
 export interface LevelEntry {
   id: string;
@@ -19,5 +20,10 @@ export const LEVELS: LevelEntry[] = [
     id: "lesson-2-spark-s-sentence-helper",
     title: "Spark's Sentence Helper",
     Component: Lesson2,
+  },
+  {
+    id: "lesson-3-which-one-doesn-t-belong",
+    title: "Which One Doesn't Belong?",
+    Component: Lesson3,
   },
 ];
