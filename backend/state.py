@@ -20,6 +20,8 @@ class State(TypedDict, total=False):
     guardrail_result: dict[str, Any]  # the guardrail agent's verdict: {safe, reason, idea}
     approval: dict[str, Any]  # the human's call at the safety gate: {approved: bool}
     game_code: str  # the coding agent's output: a React GameLevel.tsx (text)
+    static_check: dict[str, Any]  # deterministic checks on game_code: {ok: bool, problems: [...]}
+    test_results: dict[str, Any]  # the quality judge's verdict: {passed: bool, reason: str}
     halted_reason: str  # set if the run is stopped early (e.g. blocked by the guardrail)
 
 

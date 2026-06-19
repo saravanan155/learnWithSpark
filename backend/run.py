@@ -158,6 +158,10 @@ def print_final(thread: str, state: dict) -> None:
     print("  approval    =", state.get("approval"))
     if state.get("game_code"):
         print("  game_code   =", f"<{len(state['game_code'])} chars of GameLevel.tsx>")
+    if state.get("static_check"):
+        print("  static_check =", state.get("static_check"))
+    if state.get("test_results"):
+        print("  test        =", state.get("test_results"))
     if state.get("halted_reason"):
         print("  halted      =", state.get("halted_reason"))
 
